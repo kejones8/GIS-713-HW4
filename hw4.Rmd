@@ -1,0 +1,120 @@
+---
+title: "HW4"
+author: "Kate Jones"
+date: "9/27/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(spdep) 
+library(spgwr)
+library(data.table)
+library(rgdal)
+library(maps)
+library(tigris)
+library(colorRamps)
+
+setwd("C:\\Users\\The Brain\\OneDrive - North Carolina State University\\F2019 - Classes\\GIS 713\\HW\\GIS-713-HW4\\GIS713_HW4_Data\\")
+
+#reading in csv's
+pres_county<-fread("2016_US_County_Level_Presidential_Results.csv",stringsAsFactors = FALSE)
+demog_county<-fread("acs2015_county_data.csv",stringsAsFactors = FALSE)
+
+#read in shapefile
+counties <- readOGR(".\\cb_2015_us_county_20m\\cb_2015_us_county_20m.shp", "cb_2015_us_county_20m", stringsAsFactors=F)
+
+#project counties
+lamb_conf_conic<-"+proj=lcc +lat_1=20 +lat_2=60 +lat_0=40
++lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 
++datum=NAD83 +units=m +no_defs"
+#set CRS,still need to reproject
+proj4string(counties) <- CRS(lamb_conf_conic)
+
+# transform/reproject shapefile, easy for viewing all US and 
+#any other calculations
+counties_lcc <- spTransform(counties, CRS(lamb_conf_conic))
+
+
+```
+
+#SPolyDF of county, demographic, and voter information
+
+
+```{r}
+
+#look at only contiguous 48
+data(state.fips)
+
+#turn the state fips code to character and format it like
+#the rest of the fips codes
+as.character(state.fips$fips)
+state.fips$STATEFP<-stringr::str_pad(state.fips$fips, 2 ,
+                                     side = "left", pad = 0)
+
+pres_county$padded_fips<-stringr::str_pad(pres_county$combined_fips, 5 , 
+                               side = "left", pad = 0)
+
+#use inner join because we want to return only rows from
+#the counties shapefile that match the lower 48 STATEFIPS
+counties_low48<-geo_join(counties_lcc, state.fips,by_sp="STATEFP",by_df="STATEFP",how="inner")
+
+#get all of the data into spdf
+merge1 <- merge(counties_low48, demog_county, by.x="GEOID", by.y="CensusId")
+
+counties_alldat<-merge(merge1,pres_county,by.x="GEOID",by.y="padded_fips")
+
+#adding necessary variables
+
+#fraction non-citizen
+counties_alldat$frac_noncit<-(counties_alldat$TotalPop-counties_alldat$Citizen)/counties_alldat$TotalPop
+#fraction women
+counties_alldat$frac_women<-counties_alldat$Women/counties_alldat$TotalPop
+#fraction non-white
+counties_alldat$frac_nonwhite<-(counties_alldat$TotalPop-counties_alldat$White)/counties_alldat$TotalPop
+#fraction of total population that voted
+counties_alldat$frac_didvote<-counties_alldat$total_votes/counties_alldat$TotalPop
+
+#subsetting down to variables of interest
+keep <- c("per_dem","per_gop","frac_didvote","frac_women","frac_nonwhite","frac_noncit","Income","Poverty","Professional","GEOID","abb","COUNTY") # list of col names to keep
+counties_nas<- counties_alldat[,(names(counties_alldat) %in% keep)]
+
+#easily gets rid of na rows in spdf
+counties_voi<-na.omit(counties_nas)#get columns of interest
+
+```
+
+#Mapping fraction of GOP votes by county
+
+```{r cars}
+library(RColorBrewer)
+breaks<-c(seq(0,.45,.15),seq(.55,1,.15))
+pal <- colorRampPalette(rev(brewer.pal(7, "PuOr")))
+#pal <- colorRampPalette(c("purple","gray87","orange")) #browns to greens
+cols <- pal(length(breaks - 1)) #colors used are one fewer than breaks
+counties_voi$color_index <- 
+  findInterval(counties_voi$per_gop,
+               breaks, all.inside=T)
+
+plot(counties_voi, col=cols[counties_voi$color_index],lwd=.05,main="")
+
+labels <- paste(round(breaks, 2)[1:(length(breaks) - 1)], 
+                round(breaks, 2)[2:length(breaks)], sep=" to ")
+#put the legend in the bottom left, assign data labels, 
+#with corresponding colors, title the legend, assign legend and font size
+legend("bottomright", legend=c(labels), fill=c(cols), title="Percent GOP Votes",
+       cex=.7,pt.cex=.25,inset=c(.01,.015),box.col = "white")
+
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
