@@ -6,7 +6,7 @@ output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 
 library(spdep) 
 library(spgwr)
@@ -15,6 +15,7 @@ library(rgdal)
 library(maps)
 library(tigris)
 library(colorRamps)
+library(grid)
 
 setwd("C:\\Users\\The Brain\\OneDrive - North Carolina State University\\F2019 - Classes\\GIS 713\\HW\\GIS-713-HW4\\GIS713_HW4_Data\\")
 
@@ -56,12 +57,15 @@ state.fips$STATEFP<-stringr::str_pad(state.fips$fips, 2 ,
 pres_county$padded_fips<-stringr::str_pad(pres_county$combined_fips, 5 , 
                                side = "left", pad = 0)
 
+demog_county$padded_fips<-stringr::str_pad(demog_county$CensusId, 5 , 
+                               side = "left", pad = 0)
+
 #use inner join because we want to return only rows from
 #the counties shapefile that match the lower 48 STATEFIPS
 counties_low48<-geo_join(counties_lcc, state.fips,by_sp="STATEFP",by_df="STATEFP",how="inner")
 
 #get all of the data into spdf
-merge1 <- merge(counties_low48, demog_county, by.x="GEOID", by.y="CensusId")
+merge1 <- merge(counties_low48, demog_county, by.x="GEOID", by.y="padded_fips")
 
 counties_alldat<-merge(merge1,pres_county,by.x="GEOID",by.y="padded_fips")
 
@@ -77,11 +81,15 @@ counties_alldat$frac_nonwhite<-(counties_alldat$TotalPop-counties_alldat$White)/
 counties_alldat$frac_didvote<-counties_alldat$total_votes/counties_alldat$TotalPop
 
 #subsetting down to variables of interest
-keep <- c("per_dem","per_gop","frac_didvote","frac_women","frac_nonwhite","frac_noncit","Income","Poverty","Professional","GEOID","abb","COUNTY") # list of col names to keep
-counties_nas<- counties_alldat[,(names(counties_alldat) %in% keep)]
+keep <- c("per_dem","per_gop","frac_didvote","frac_women","frac_nonwhite","frac_noncit","Income","Poverty","ChildPoverty","Professional","GEOID","abb","COUNTY","STATEFP") # list of col names to keep
+counties_voi<- counties_alldat[,(names(counties_alldat) %in% keep)]
 
 #easily gets rid of na rows in spdf
-counties_voi<-na.omit(counties_nas)#get columns of interest
+##when I use this California, Arkansas, etc disappears
+## but if I don't use this, then i get na's and my regression won't run
+counties_nona<- spatialEco::sp.na.omit(counties_voi)#get columns of interest
+
+counties_test<-counties_voi[complete.cases(counties_voi@data),]
 
 ```
 
@@ -93,28 +101,86 @@ breaks<-c(seq(0,.45,.15),seq(.55,1,.15))
 pal <- colorRampPalette(rev(brewer.pal(7, "PuOr")))
 #pal <- colorRampPalette(c("purple","gray87","orange")) #browns to greens
 cols <- pal(length(breaks - 1)) #colors used are one fewer than breaks
-counties_voi$color_index <- 
-  findInterval(counties_voi$per_gop,
+counties_nona$color_index <- 
+  findInterval(counties_nona$per_gop,
                breaks, all.inside=T)
 
-plot(counties_voi, col=cols[counties_voi$color_index],lwd=.05,main="")
+plot(counties_nona, col=cols[counties_nona$color_index],lwd=.05,main="Percent GOP Votes by County")
 
-labels <- paste(round(breaks, 2)[1:(length(breaks) - 1)], 
-                round(breaks, 2)[2:length(breaks)], sep=" to ")
+labels <- paste(paste0((round(breaks, 2)*100)[1:(length(breaks) - 1)],"%"), 
+                paste0((round(breaks, 2)*100)[2:length(breaks)], "%"),sep= " to ")
 #put the legend in the bottom left, assign data labels, 
 #with corresponding colors, title the legend, assign legend and font size
 legend("bottomright", legend=c(labels), fill=c(cols), title="Percent GOP Votes",
-       cex=.7,pt.cex=.25,inset=c(.01,.015),box.col = "white")
+       cex=.65,pt.cex=.25,inset=c(.00001,.07),box.col = "white")
+legend("bottomright",legend=c("NA"),fill=c("white"),cex=.6,pt.cex=.25,inset=c(.089,.017),box.col = "white")
 
 
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
+#GWR
 
 ```{r pressure, echo=FALSE}
-plot(pressure)
+
+
+#find the optimal bandwidth
+optim_bw <- gwr.sel(per_gop~frac_didvote+frac_women+frac_nonwhite+frac_noncit+Income+Poverty+ChildPoverty+Professional, data=counties_nona)
+
+#run geographic weighted regression
+gop_gwr <- gwr(per_gop~frac_didvote+frac_women+frac_nonwhite+frac_noncit+Income+Poverty+ChildPoverty+Professional, data=counties_nona, bandwidth = optim_bw, hatmatrix=TRUE)
+
+#plot the predicted values - GOP Votes %
+plot.new()
+spplot(gop_gwr$SDF, "pred",main = list(label="Predicted GOP Votes (%)", cex = 1))
+#grid::grid.text("GOP Votes (%)", x=unit(0.99, "npc"), y=unit(0.50, "npc"), rot=-90)
+legend("bottomright",legend=c("NA"),fill=c("white"),cex=.75,pt.cex=.25,inset=c(.05,.0001),box.col = "white")
+
+#plot the R-squared for relationships....what exactly does this r-squared mean? 
+plot.new()
+spplot(gop_gwr$SDF, "localR2",main = list(label="Local R-squared Value: Predicted GOP Votes", cex = 1))
+legend("bottomright",legend=c("NA"),fill=c("white"),cex=.75,pt.cex=.25,inset=c(.05,.0001),box.col = "white")
+
+#plot the coefficient values for each variable
+#plot.new() # can get rid of these in final product, but for now, helps for drawing
+spplot(gop_gwr$SDF, "frac_didvote",main = list(label="Fraction of Voting Population: Coefficient Values", cex = 1))
+legend("bottomright",legend=c("NA"),fill=c("white"),cex=.75,pt.cex=.25,inset=c(.1,.0001),box.col = "white")
+
+
+
+spplot(gop_gwr$SDF, "frac_women")
+spplot(gop_gwr$SDF, "frac_nonwhite")
+spplot(gop_gwr$SDF, "frac_noncit")
+spplot(gop_gwr$SDF, "Income")
+spplot(gop_gwr$SDF, "Poverty")
+spplot(gop_gwr$SDF, "ChildPoverty")
+spplot(gop_gwr$SDF, "Professional")
+
+
+```
+
+#Fit linear model and test for autocorrelation in the residuals
+
+```{r}
+#fit linear model using the 
+county_lm <- lm(per_gop~frac_didvote+frac_women+frac_nonwhite+frac_noncit+Income+Poverty+ChildPoverty+Professional, data=counties_nona)
+
+counties_nona$lm_resids <- county_lm$residuals
+spplot(counties_nona, "lm_resids")
+
+#make better plot - adapt this code 
+qs <- quantile(meuse$cad_lm_resids, c(0, 0.02, 0.98, 1))
+tmp_breaks <- seq(0, max(abs(qs[2:3])), len=5)
+breaks <- c(-1 * max(abs(qs[c(1, 4)])), -1 * rev(tmp_breaks[2:length(tmp_breaks)]), tmp_breaks[2:length(tmp_breaks)], max(abs(qs[c(1, 4)])))
+pal <- colorRampPalette(brewer.pal(11, "RdBu"))
+resid_cols <- pal(length(breaks) - 1)
+plot(coordinates(meuse)[,1], coordinates(meuse)[,2], pch=16, cex=5,  col=resid_cols[findInterval(meuse$cad_lm_resids, breaks, all.inside=T)])
+legend("topleft", legend=paste(round(breaks, 1)[1:(length(breaks) - 1)], round(breaks, 1)[2:length(breaks)], sep="-"), pch=16, col=resid_cols, title="Cad. OLS Resids")
+
+#test for autocorrelation in resids
+w <- 1 / as.matrix(dist(coordinates(counties_nona)))
+diag(w) <- 0
+moran.test(counties_nona$per_gop, mat2listw(w))
+moran.test(residuals(county_lm), mat2listw(w))
 ```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
